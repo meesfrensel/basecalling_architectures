@@ -60,6 +60,7 @@ if __name__ == '__main__':
         'sacall',
         'urnano',
         'halcyon',
+        'own',
     ], help='Model')
     parser.add_argument("--window-size", type=int, choices=[400, 1000, 2000, 4000], help='Window size for the data')
     parser.add_argument("--num-epochs", type=int, default = 5)
@@ -71,13 +72,15 @@ if __name__ == '__main__':
     parser.add_argument("--checkpoint", type=str, help='checkpoint file to resume training')
     args = parser.parse_args()
     
-    validate_every = 500
-    checkpoint_every = 20000
+    print("VALIDATE EVERY 100 STEPS")
+    validate_every = 100 # was 5000
+    print("CHECKPOINT EVERY 20000 STEPS")
+    checkpoint_every = 20000 # was 20000
 
     data_dir = args.data_dir
 
     if args.model == 'halcyon':
-        from halcyon.model import HalcyonModelS2S as Model # pyright: reportMissingImports=false
+        from halcyon.model import HalcyonModelS2S as Model # pyright: ignore[reportMissingImports]
         decoding_dict = RECURRENT_DECODING_DICT
         encoding_dict = RECURRENT_ENCODING_DICT
         s2s = True
@@ -86,17 +89,19 @@ if __name__ == '__main__':
         encoding_dict = NON_RECURRENT_ENCODING_DICT
         s2s = False
         if args.model == 'bonito':
-            from bonito.model import BonitoModel as Model# pyright: reportMissingImports=false
+            from bonito.model import BonitoModel as Model # pyright: ignore[reportMissingImports]
         elif args.model == 'catcaller':
-            from catcaller.model import CATCallerModel as Model# pyright: reportMissingImports=false
+            from catcaller.model import CATCallerModel as Model # pyright: ignore[reportMissingImports]
         elif args.model == 'causalcall':
-            from causalcall.model import CausalCallModel as Model # pyright: reportMissingImports=false
+            from causalcall.model import CausalCallModel as Model # pyright: ignore[reportMissingImports]
         elif args.model == 'mincall':
-            from mincall.model import MinCallModel as Model # pyright: reportMissingImports=false
+            from mincall.model import MinCallModel as Model # pyright: ignore[reportMissingImports]
         elif args.model == 'sacall':
-            from sacall.model import SACallModel as Model # pyright: reportMissingImports=false
+            from sacall.model import SACallModel as Model # pyright: ignore[reportMissingImports]
         elif args.model == 'urnano':
-            from urnano.model import URNanoModel as Model # pyright: reportMissingImports=false
+            from urnano.model import URNanoModel as Model # pyright: ignore[reportMissingImports]
+        elif args.model == 'own':
+            from own.model import OwnModel as Model # pyright: ignore[reportMissingImports]
         
     print('Creating dataset')
     dataset = BaseNanoporeDataset(
@@ -125,7 +130,7 @@ if __name__ == '__main__':
 
     if args.use_scaler:
         use_amp = True
-        scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+        scaler = torch.cuda.amp.GradScaler(enabled=use_amp) # type: ignore
     else:
         use_amp = False
         scaler = None
@@ -143,9 +148,9 @@ if __name__ == '__main__':
 
     print('Creating optimization')
     ##    OPTIMIZATION     #############################################
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.starting_lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.starting_lr, eps=1e-4)
     total_steps =  (len(dataset.train_idxs)*args.num_epochs)/args.batch_size
-    cosine_lr = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,total_steps, eta_min=0.00001, last_epoch=-1, verbose=False)
+    cosine_lr = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,total_steps, eta_min=0.00001, last_epoch=-1)
     lr_scheduler = GradualWarmupScheduler(optimizer, multiplier = 1.0, total_epoch = args.warmup_steps, after_scheduler=cosine_lr)
     schedulers = {'lr_scheduler': lr_scheduler}
     clipping_value = 2
@@ -262,6 +267,21 @@ if __name__ == '__main__':
                     
                 # write results to console
                 print(log_df)
+                if args.model == 'own':
+                    # nonzero_s = [torch.count_nonzero(model.encoder[l].rnn.get_parameter('s')) for l in range(3)]
+                    # nonzero_z = [torch.count_nonzero(model.encoder[l].rnn.get_parameter('z')) for l in range(3)]
+                    for l in range(3):
+                        for name, weight in model.encoder[l].named_parameters():
+                            if not 'log_alpha' in name:
+                                continue
+                            if torch.any(torch.isnan(weight)):
+                                print('WARNING: NaN weights:')
+                                print(weight.data)
+                            if torch.any(torch.isnan(weight.grad)):
+                                print('WARNING: NaN gradients:')
+                                print(weight.grad)
+                            var, mean = torch.var_mean(weight.data)
+                            # print('{}.{} [ var: {:.3}, mean: {:.3}, w0-2: {}, grd0-2: {} ]'.format(name, l, var.item(), mean.item(), weight.data[0:3].tolist(), weight.grad[0:3].tolist()))
                 
     
     model.save(os.path.join(checkpoints_dir, 'checkpoint_' + str(total_num_steps) + '.pt'))

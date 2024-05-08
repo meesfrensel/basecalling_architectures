@@ -126,6 +126,10 @@ def segment_reads_and_write(read_files, output_file, window_length, overlap, min
         min_bases (int): minimum number of bases for a chunk to be considered
         max_bases (int): max number of bases for a chunk to be considered
     """
+
+    if len(read_files) == 0:
+        print('No read files provided')
+        return
     
     x_list = list()
     y_list = list()
@@ -135,7 +139,11 @@ def segment_reads_and_write(read_files, output_file, window_length, overlap, min
         if not x is None:
             x_list.append(x)
             y_list.append(y)
-        
+    
+    if len(x_list) == 0 or len(y_list) == 0:
+        print('No segments gotten from files')
+        return
+    
     X = np.vstack(x_list)
     Y = np.vstack(y_list)
     
@@ -158,6 +166,13 @@ def main(fast5_dir, fast5_files_list, output_dir, total_files,
         n_cores (int): number of processes
         verbose (bool): output a progress bar
     """
+
+    if os.path.isfile(output_dir):
+        raise ValueError('Output directory is an existing file')
+    elif os.path.isdir(output_dir) and len(os.listdir(output_dir)) > 0:
+        raise ValueError('Output directory contains files')
+
+    os.makedirs(output_dir, exist_ok=True)
     
 
     print('Finding files to process')

@@ -165,6 +165,7 @@ class BaseModel(nn.Module):
             # loss, losses = self.calculate_loss(y, p)
             # self.optimizer.second_step(zero_grad=True)
         elif self.scaler is not None:
+            assert False
 
             self.scaler.scale(loss).backward()
 
@@ -178,8 +179,14 @@ class BaseModel(nn.Module):
         else:
             self.optimizer.zero_grad()
             loss.backward()
+            # for name, param in self.named_parameters():
+            #     if 'alpha' in name:
+            #         print(name, param.grad)
             torch.nn.utils.clip_grad_norm_(self.parameters(), self.clipping_value)
-            self.optimizer.step()
+            if not hasattr(self, 'mask') or self.mask == None:
+                self.optimizer.step()
+            else:
+                self.mask.step()
             
         for scheduler in self.schedulers.values():
             if scheduler:
@@ -949,10 +956,13 @@ class BaseNanoporeDataset(Dataset):
         """Finds list of files to read
         """
         l = list()
-        for f in os.listdir(self.data_dir):
-            if f.endswith('.npz'):
-                l.append(f)
+        for r, d, f in os.walk(self.data_dir):
+            for file in f:
+                if file.endswith('.npz'):
+                    rel_dir = os.path.relpath(r, self.data_dir)
+                    l.append(os.path.join(rel_dir, file))
         l = sorted(l)
+        print("Found " + str(len(l)) + " files")
         return l
     
     def _get_samples_per_file(self):
@@ -1104,6 +1114,12 @@ class IdxSampler(Sampler):
         
 class BaseFast5Dataset(Dataset):
     """Base dataset class that iterates over fast5 files for basecalling
+
+    Attributes:
+        data_dir (str): dir where the fast5 files are
+        fast5_list (str): file with a list of files to be processed
+        recursive (bool): if the data_dir should be searched recursively
+        buffer_size (int): number of fast5 files to read 
     """
 
     def __init__(self, 
@@ -1117,12 +1133,12 @@ class BaseFast5Dataset(Dataset):
         ):
         """
         Args:
-            data_dir (str): dir where the fast5 file
+            data_dir (str): dir where the fast5 files are
             fast5_list (str): file with a list of files to be processed
             recursive (bool): if the data_dir should be searched recursively
             buffer_size (int): number of fast5 files to read 
 
-        data_dir and fast5_list are esclusive
+        data_dir and fast5_list are exclusive
         """
         
         super(BaseFast5Dataset, self).__init__()
@@ -1256,7 +1272,7 @@ class BaseFast5Dataset(Dataset):
                 num_chunks = chunks.shape[0]
                 
                 uuid_fields = uuid.UUID(read_id).fields
-                id_arr = np.zeros((num_chunks, 6), dtype = np.int)
+                id_arr = np.zeros((num_chunks, 6), dtype = np.int64)
                 for i, uf in enumerate(uuid_fields):
                     id_arr[:, i] = uf
                 
@@ -1278,7 +1294,7 @@ class BaseBasecaller():
 
         assert isinstance(dataset, BaseFast5Dataset)
 
-        self.dataset = DataLoader(dataset, batch_size=1, shuffle=False, num_workers = 2)
+        self.dataset = DataLoader(dataset, batch_size=1, shuffle=False, num_workers = 4)
         self.model = model
         self.batch_size = batch_size
         self.output_file = output_file
@@ -1502,6 +1518,11 @@ class BaseBasecaller():
 
         return "".join(consensus), "".join(phredq_consensus), direction 
 
+def trace_handler(pr):
+    output = pr.key_averages().table(sort_by="self_cuda_time_total", row_limit=10)
+    print(output)
+    pr.export_chrome_trace("/tmp/trace_" + str(pr.step_num) + ".json")
+
 class BasecallerCTC(BaseBasecaller):
     """A base Basecaller class that is used to basecall complete reads
     """
@@ -1566,20 +1587,25 @@ class BasecallerCTC(BaseBasecaller):
         return fastq_string
 
     def basecall(self, verbose = True):
-
-        # iterate over the data
         for batch in tqdm(self.dataset, disable = not verbose):
-            
+            torch.cuda.nvtx.range_push("batched ctc")
+            torch.cuda.nvtx.range_push("pre-process")
+
             x = batch['x'].squeeze(0)
             l = x.shape[0]
             ss = torch.arange(0, l, self.batch_size)
             nn = ss + self.batch_size
 
+            torch.cuda.nvtx.range_pop()
+
             p_list = list()
             for s, n in zip(ss, nn):
+                torch.cuda.nvtx.range_push("predict")
                 p = self.model.predict_step({'x':x[s:n, :]})
                 p_list.append(p)
+                torch.cuda.nvtx.range_pop()
                 
+            torch.cuda.nvtx.range_push("post-process")
             p = torch.hstack(p_list)
 
             ids = batch['id'][0]
@@ -1587,6 +1613,8 @@ class BasecallerCTC(BaseBasecaller):
             for i in range(ids.shape[0]):
                 ids_arr[i] = str(uuid.UUID(fields=ids[i].tolist()))
 
+            torch.cuda.nvtx.range_pop()
+            torch.cuda.nvtx.range_push("write")
 
             for read_id in np.unique(ids_arr):
                 w = np.where(ids_arr == read_id)[0]
@@ -1597,7 +1625,8 @@ class BasecallerCTC(BaseBasecaller):
                 with open(self.output_file, 'a') as f:
                     f.write(str(fastq_string))
                     f.flush()
-            
+            torch.cuda.nvtx.range_pop()
+            torch.cuda.nvtx.range_pop()
 
         return None
     
@@ -1615,6 +1644,8 @@ class BasecallerCRF(BaseBasecaller):
         assert self.dataset.dataset.buffer_size == 1
         
         for batch in tqdm(self.dataset, disable = not verbose):
+            torch.cuda.nvtx.range_push("batched crf")
+            torch.cuda.nvtx.range_push("pre-process")
 
             ids = batch['id'].squeeze(0)
             ids_arr = np.zeros((ids.shape[0], ), dtype = 'U36')
@@ -1629,12 +1660,18 @@ class BasecallerCRF(BaseBasecaller):
             ss = torch.arange(0, l, self.batch_size)
             nn = ss + self.batch_size
 
+            torch.cuda.nvtx.range_pop()
+
             transition_scores = list()
             for s, n in zip(ss, nn):
+                torch.cuda.nvtx.range_push("predict")
                 p = self.model.predict_step({'x':x[s:n, :]})
                 scores = self.model.compute_scores(p, use_fastctc=True)
                 transition_scores.append(scores[0].cpu())
+                torch.cuda.nvtx.range_pop()
             init = scores[1][0, 0].cpu()
+
+            torch.cuda.nvtx.range_push("post-process")
 
             stacked_transitions = self.stitch_by_stride(
                 chunks = np.vstack(transition_scores), 
@@ -1673,11 +1710,15 @@ class BasecallerCRF(BaseBasecaller):
                 fastq_string += seq + '\n'
                 fastq_string += '+\n'
                 fastq_string += '?'*len(seq) + '\n'
+
+            torch.cuda.nvtx.range_pop()
+            torch.cuda.nvtx.range_push("write")
             
             with open(self.output_file, 'a') as f:
                 f.write(str(fastq_string))
                 f.flush()
-
+            torch.cuda.nvtx.range_pop()
+            torch.cuda.nvtx.range_pop()
             
 class BasecallerSeq2Seq(BaseBasecaller):
 
@@ -1766,3 +1807,4 @@ class BasecallerImpl(BasecallerCTC, BasecallerCRF, BasecallerSeq2Seq):
 
         if self.model.decoder_type == 'seq2seq':
             return BasecallerSeq2Seq.basecall(self, verbose = verbose, *args, **kwargs)
+

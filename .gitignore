@@ -7,3 +7,6 @@ venv3
 *.pyc
 demo_data/trained_model_comb
 demo_data/trained_model_original
+*.out
+.venv
+.vscode/
