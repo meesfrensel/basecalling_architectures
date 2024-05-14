@@ -8,7 +8,7 @@
 #SBATCH --mem 32G
 #SBATCH --gres=gpu:RTX2080Ti:1
 
-echo "Starting test script"
+echo "Starting test script: neuron selection, only hidden weights (s)"
 
 module load cuda/11.0
 echo "Loaded cuda/11.0. Running nvidia-smi:"
@@ -22,8 +22,8 @@ echo "Starting training"
 echo "---"
 python ./scripts/train_original.py \
         --data-dir ../datashare/nn_input \
-        --output-dir ../datashare/selectionlstmownnormallr \
-        --model own --window-size 2000 --batch-size 32
+        --output-dir ../datashare/selectionlstm \
+        --model own --window-size 2000 --batch-size 64
         #--checkpoint ../datashare/train_output_original_4d/checkpoints/checkpoint_1980000.pt
 echo "---"
 echo "DONE"

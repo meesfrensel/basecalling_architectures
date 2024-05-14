@@ -127,7 +127,6 @@ if __name__ == '__main__':
         num_workers = 1
     )
 
-
     if args.use_scaler:
         use_amp = True
         scaler = torch.cuda.amp.GradScaler(enabled=use_amp) # type: ignore
@@ -268,8 +267,6 @@ if __name__ == '__main__':
                 # write results to console
                 print(log_df)
                 if args.model == 'own':
-                    # nonzero_s = [torch.count_nonzero(model.encoder[l].rnn.get_parameter('s')) for l in range(3)]
-                    # nonzero_z = [torch.count_nonzero(model.encoder[l].rnn.get_parameter('z')) for l in range(3)]
                     for l in range(3):
                         for name, weight in model.encoder[l].named_parameters():
                             if not 'log_alpha' in name:
@@ -281,7 +278,7 @@ if __name__ == '__main__':
                                 print('WARNING: NaN gradients:')
                                 print(weight.grad)
                             var, mean = torch.var_mean(weight.data)
-                            # print('{}.{} [ var: {:.3}, mean: {:.3}, w0-2: {}, grd0-2: {} ]'.format(name, l, var.item(), mean.item(), weight.data[0:3].tolist(), weight.grad[0:3].tolist()))
+                            print('{}.{} [ var: {:.3}, mean: {:.3}, nonz0-2: {}, w0-2: {} ]'.format(name, l, var.item(), mean.item(), torch.sigmoid(torch.add(weight.data, 0.6942))[0:3].tolist(), weight.data[0:3].tolist()))
                 
     
     model.save(os.path.join(checkpoints_dir, 'checkpoint_' + str(total_num_steps) + '.pt'))
