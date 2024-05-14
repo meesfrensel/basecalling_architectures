@@ -10,3 +10,5 @@ demo_data/trained_model_original
 *.out
 .venv
 .vscode/
+delftblue_script.sh
+load_modules.sh
