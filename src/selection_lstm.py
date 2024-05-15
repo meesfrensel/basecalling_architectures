@@ -33,9 +33,9 @@ class SelectionLstmCell(jit.ScriptModule): # type: ignore
         self.log_alpha_s = Parameter(torch.empty(self.hidden_size, dtype=torch.float16))
 
         # Hyper-parameters
-        self.beta = 0.67 # "Try lambda = 2/3" (https://vitalab.github.io/article/2018/11/29/concrete.html)
-        self.zeta = -0.1 # https://arxiv.org/pdf/1811.09332
-        self.gamma = 1.1
+        self.beta = SelectionLstm.BETA
+        self.gamma = SelectionLstm.GAMMA
+        self.zeta = SelectionLstm.ZETA
 
         self.reset_parameters()
 
@@ -53,24 +53,17 @@ class SelectionLstmCell(jit.ScriptModule): # type: ignore
     @jit.script_method # type: ignore
     def _smooth_gate(self, log_alpha: Tensor) -> Tensor:
         u = torch.rand(log_alpha.shape, device=log_alpha.device) # pyright: ignore
-        tau_hat = torch.sigmoid((u.log() - (-u).log1p() + log_alpha) / self.beta)
-        tau = tau_hat * (self.zeta - self.gamma) + self.gamma
-        return tau.clamp(0, 1)
+        τ_hat = torch.sigmoid((u.log() - (-u).log1p() + log_alpha) / self.beta)
+        τ = τ_hat * (self.zeta - self.gamma) + self.gamma
+        return τ.clamp(0, 1)
 
     @jit.script_method # type: ignore
     def forward(self, input: Tensor, state: Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
         hx, cx = state
 
-        # assert not torch.any(torch.isnan(self.z))
-        # assert not torch.any(torch.isnan(self.s))
-
         # z = self._smooth_gate(self.log_alpha_z)
         s = self._smooth_gate(self.log_alpha_s)
 
-        # z = torch.sigmoid(self.log_alpha_z)
-        # s = torch.sigmoid(self.log_alpha_s)
-        # assert not torch.any(torch.isnan(z))
-        assert not torch.any(torch.isnan(s))
         # W_hat = self.W * (z.unsqueeze(1) @ s.unsqueeze(0)).repeat(4, 1)
         W_hat = self.W
         U_hat = self.U * (s.unsqueeze(1) @ s.unsqueeze(0)).repeat(4, 1)
@@ -93,6 +86,10 @@ class SelectionLstmCell(jit.ScriptModule): # type: ignore
         return hy, (hy, cy)
 
 class SelectionLstm(jit.ScriptModule): # type: ignore
+    BETA = 2/3 # "Try lambda = 2/3" (https://vitalab.github.io/article/2018/11/29/concrete.html)
+    GAMMA = -0.1 # https://arxiv.org/pdf/1811.09332
+    ZETA = 1.1
+
     def __init__(self, input_size, hidden_size, reverse=False):
         super(SelectionLstm, self).__init__()
 

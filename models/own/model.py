@@ -118,7 +118,7 @@ class OwnModel(BaseModelImpl):
         self.decoder_type = 'crf'
     
     def _nonzero_cdf(self, log_alpha):
-        return torch.sigmoid(torch.add(log_alpha, 0.67 * math.log(-(1.1) / -0.1)))
+        return torch.sigmoid(torch.add(log_alpha, -SelectionLstm.BETA * math.log(-SelectionLstm.GAMMA / SelectionLstm.ZETA)))
 
     def train_step(self, batch):
         """Copied from classes.py>BaseModel, and added loss for nonzero z or s elements.
@@ -139,8 +139,8 @@ class OwnModel(BaseModelImpl):
             p = self.forward(x) # forward through the network
             loss, losses = self.calculate_loss(y, p)
 
-        lambda_1 = 0.00005 # 0.08/N (if N is correctly assumed to be 384) is about 0.0002
-        lambda_2 = 0.00005
+        lambda_1 = 0.00001 # 0.08/N (if N is correctly assumed to be 384) is about 0.0002
+        lambda_2 = 0.00001
 
         log_alpha_z = None
         log_alpha_s = None
