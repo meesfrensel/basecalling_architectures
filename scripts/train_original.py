@@ -62,7 +62,7 @@ if __name__ == '__main__':
         'halcyon',
         'own',
     ], help='Model')
-    parser.add_argument("--window-size", type=int, choices=[400, 1000, 2000, 4000], help='Window size for the data')
+    parser.add_argument("--window-size", type=int, default = 2000, choices=[400, 1000, 2000, 4000], help='Window size for the data')
     parser.add_argument("--num-epochs", type=int, default = 5)
     parser.add_argument("--batch-size", type=int, default = 64)
     parser.add_argument("--starting-lr", type=float, default = 0.001)
@@ -267,7 +267,7 @@ if __name__ == '__main__':
                 # write results to console
                 print(log_df)
                 if args.model == 'own':
-                    for l in range(3):
+                    for l in range(len(model.encoder)):
                         for name, weight in model.encoder[l].named_parameters():
                             if not 'log_alpha' in name:
                                 continue

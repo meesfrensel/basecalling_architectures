@@ -1665,9 +1665,15 @@ class BasecallerCRF(BaseBasecaller):
             transition_scores = list()
             for s, n in zip(ss, nn):
                 torch.cuda.nvtx.range_push("predict")
+                torch.cuda.nvtx.range_push("forward")
                 p = self.model.predict_step({'x':x[s:n, :]})
+                torch.cuda.nvtx.range_pop()
+                torch.cuda.nvtx.range_push("compute scores")
                 scores = self.model.compute_scores(p, use_fastctc=True)
+                torch.cuda.nvtx.range_pop()
+                torch.cuda.nvtx.range_push("append scores")
                 transition_scores.append(scores[0].cpu())
+                torch.cuda.nvtx.range_pop()
                 torch.cuda.nvtx.range_pop()
             init = scores[1][0, 0].cpu()
 

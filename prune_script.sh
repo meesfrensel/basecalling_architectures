@@ -28,7 +28,5 @@ python ./scripts/prune_finetune.py \
         --num-iterations 1 \
         --output-dir "/shares/bulk/mfrensel/prunetune/prunetune_bonito_${*// /_}" \
         --prune $@
-        #--selfish-rnn --density 0.2 --death-rate 0.3 --death SET --redistribution momentum \
-        #--output-dir /shares/bulk/mfrensel/selfishrnn
 echo "---"
 echo "DONE"

@@ -7,10 +7,7 @@ import argparse
 
 from classes import BasecallerImpl, BaseFast5Dataset
 
-import pandas as pd
-import numpy as np
 import torch
-import torch.nn.utils.prune as prune
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -96,33 +93,15 @@ if __name__ == "__main__":
     )
     model = model.to(device)
 
-    model = model.to(device)
-    for i in range(5):
-        prune.identity(model.encoder[i].rnn, 'weight_ih_l0')
-        prune.identity(model.encoder[i].rnn, 'weight_hh_l0')
     model.load(checkpoint_file, initialize_lazy = True)
-    # for i in range(5):
-    #     prune.remove(model.encoder[i].rnn, 'weight_ih_l0')
-    #     prune.remove(model.encoder[i].rnn, 'weight_hh_l0')
-    model = model.to(device)
-    ex_input = next(iter(fast5_dataset))['x'][0:64, :].unsqueeze(1)
-    print(ex_input.shape)
-    torch.onnx.export(model, ex_input.to('cuda:0'), "90sparse.onnx", export_params=True, opset_version=10, do_constant_folding=True, input_names=['input'], output_names=['output'], dynamic_axes={'input' : {0 : 'batch_size'},'output' : {0 : 'batch_size'}})
-    sys.exit()
-    # prune.remove(model.encoder[4].rnn, 'weight_ih_l0')
-    # prune.remove(model.encoder[4].rnn, 'weight_hh_l0')
-    model = model.to(device)
-    # print(model)
-    
-    # model.encoder[4].rnn.weight_ih_l0 = torch.nn.Parameter(model.encoder[4].rnn.weight_ih_l0.to_sparse())
-    # model.encoder[4].rnn.weight_hh_l0 = torch.nn.Parameter(model.encoder[4].rnn.weight_hh_l0.to_sparse())
-    # print(model.encoder[4].rnn.weight_hh_l0)
-    # model.encoder[4].rnn.flatten_parameters()
-    # print(model.encoder[4].rnn.weight_ih_l0)
-    #model.encoder[4].rnn.flatten_parameters()
 
-    print('to device')
     model = model.to(device)
+
+    # # export for onnx
+    # ex_input = next(iter(fast5_dataset))['x'][0:64, :].unsqueeze(1)
+    # print(ex_input.shape)
+    # torch.onnx.export(model, ex_input.to('cuda:0'), "90sparse.onnx", export_params=True, opset_version=10, do_constant_folding=True, input_names=['input'], output_names=['output'], dynamic_axes={'input' : {0 : 'batch_size'},'output' : {0 : 'batch_size'}})
+    # sys.exit()
 
     basecaller = BasecallerImpl(
         dataset = fast5_dataset, 

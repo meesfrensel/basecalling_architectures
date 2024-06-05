@@ -1,10 +1,8 @@
 import math
-from collections import namedtuple
 from typing import List, Tuple
 
 import torch
 import torch.jit as jit
-import torch.nn as nn
 from torch import Tensor
 from torch.nn.parameter import Parameter
 
@@ -28,9 +26,9 @@ class SelectionLstmCell(jit.ScriptModule): # type: ignore
 
         self.W = Parameter(torch.empty(4 * self.hidden_size, self.input_size))
         self.U = Parameter(torch.empty(4 * self.hidden_size, self.hidden_size))
-        self.b = Parameter(torch.empty(4 * self.hidden_size, dtype=torch.float16))
-        # self.log_alpha_z = Parameter(torch.empty(self.input_size, dtype=torch.float16))
-        self.log_alpha_s = Parameter(torch.empty(self.hidden_size, dtype=torch.float16))
+        self.b = Parameter(torch.empty(4 * self.hidden_size))
+        # self.log_alpha_z = Parameter(torch.empty(self.input_size))
+        self.log_alpha_s = Parameter(torch.empty(self.hidden_size))
 
         # Hyper-parameters
         self.beta = SelectionLstm.BETA
@@ -42,9 +40,7 @@ class SelectionLstmCell(jit.ScriptModule): # type: ignore
     def reset_parameters(self):
         stdv = 1.0 / math.sqrt(self.hidden_size)
         for name, weight in self.named_parameters():
-            if name == 'z' or name == 's':
-                weight.data.fill_(1)
-            elif name == 'log_alpha_z' or name == 'log_alpha_s':
+            if name == 'log_alpha_s':
                 # "For log α, it is updated by back-propagation of the network and initialized by samples from N(1, 0.1)"
                 weight.data.normal_(mean=1, std=0.1)
             else:
@@ -52,21 +48,28 @@ class SelectionLstmCell(jit.ScriptModule): # type: ignore
 
     @jit.script_method # type: ignore
     def _smooth_gate(self, log_alpha: Tensor) -> Tensor:
-        u = torch.rand(log_alpha.shape, device=log_alpha.device) # pyright: ignore
+        u = torch.rand_like(log_alpha)
         τ_hat = torch.sigmoid((u.log() - (-u).log1p() + log_alpha) / self.beta)
         τ = τ_hat * (self.zeta - self.gamma) + self.gamma
         return τ.clamp(0, 1)
 
     @jit.script_method # type: ignore
+    def _estimate_final_gate(self, log_alpha: Tensor) -> Tensor:
+        return torch.clamp(torch.sigmoid(log_alpha) * (self.zeta - self.gamma) + self.gamma, 0, 1)
+
+    @jit.script_method # type: ignore
     def forward(self, input: Tensor, state: Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
         hx, cx = state
 
-        # z = self._smooth_gate(self.log_alpha_z)
-        s = self._smooth_gate(self.log_alpha_s)
+        if self.training:
+            s = self._smooth_gate(self.log_alpha_s)
+        else:
+            s = self._estimate_final_gate(self.log_alpha_s)
 
-        # W_hat = self.W * (z.unsqueeze(1) @ s.unsqueeze(0)).repeat(4, 1)
-        W_hat = self.W
+        W_hat = self.W * s.unsqueeze(0)
+        # W_hat = self.W
         U_hat = self.U * (s.unsqueeze(1) @ s.unsqueeze(0)).repeat(4, 1)
+        # U_hat = self.U
 
         gates = (
             torch.mm(input, W_hat.t())
@@ -85,7 +88,7 @@ class SelectionLstmCell(jit.ScriptModule): # type: ignore
 
         return hy, (hy, cy)
 
-class SelectionLstm(jit.ScriptModule): # type: ignore
+class SelectionLstm(torch.nn.Module):
     BETA = 2/3 # "Try lambda = 2/3" (https://vitalab.github.io/article/2018/11/29/concrete.html)
     GAMMA = -0.1 # https://arxiv.org/pdf/1811.09332
     ZETA = 1.1
@@ -99,13 +102,31 @@ class SelectionLstm(jit.ScriptModule): # type: ignore
 
         self.lstm = SelectionLstmCell(input_size, hidden_size)
 
-    @jit.script_method # type: ignore
+        self.inference_lstm = torch.nn.LSTM(input_size, hidden_size)
+        # self.register_load_state_dict_post_hook(change_lstm_cell)
+        self.must_update_inference_lstm = False
+        self.mask = torch.ones(hidden_size, dtype=torch.bool, device='cuda')
+
     def forward(self, input: Tensor) -> Tensor:
         # x: [sequence len, batch size, input size]
         # e.g. [400       , 64        , 384       ]
+        batch_size = input.shape[1]
 
-        h0 = torch.zeros(input.size(1), 384, device=input.device)
-        c0 = torch.zeros(input.size(1), 384, device=input.device)
+        # if not self.training: # inference
+        #     if self.must_update_inference_lstm:
+        #         change_lstm_cell(self)
+
+        #     output, _ = self.inference_lstm(input.flip(0) if self.reverse else input)
+        #     tmp = torch.zeros(input.shape[0], batch_size, self.hidden_size, device=input.device) # original hidden size, not the pruned/masked hidden size
+        #     output = tmp.masked_scatter_(self.mask.unsqueeze(0).unsqueeze(1), output)
+        #     assert output.shape == torch.Size([input.shape[0], input.shape[1], self.hidden_size])
+        #     return output
+
+        self.must_update_inference_lstm = True
+
+        hidden_size = input.shape[2] if self.training else int(self.mask.count_nonzero().item())
+        h0 = torch.zeros(batch_size, hidden_size, device=input.device)
+        c0 = torch.zeros(batch_size, hidden_size, device=input.device)
         state = (h0, c0)
 
         inputs = reverse(input.unbind(0)) if self.reverse else input.unbind(0)
@@ -115,3 +136,27 @@ class SelectionLstm(jit.ScriptModule): # type: ignore
             outputs += [out]
 
         return torch.stack(reverse(outputs) if self.reverse else outputs)#, state
+
+def change_lstm_cell(module: SelectionLstm, _unmappable=None):
+    THRESHOLD = 0.3
+    s = module.lstm._estimate_final_gate(module.lstm.log_alpha_s)
+    s[s <= THRESHOLD] = 0
+    s[s > THRESHOLD] = 1
+
+    # Shrink weight matrices by removing all zero columns & rows
+    num_nonzero = int(s.count_nonzero().item())
+
+    mask_W = s.repeat(s.shape[0] * 4, 1).type(torch.bool)
+    mask_U = (s.unsqueeze(1) @ s.unsqueeze(0)).repeat(4, 1).type(torch.bool)
+    # TODO: check impact of also masking bias; these terms might be useful for final accuracy
+    bias = module.lstm.b.masked_select(s.type(torch.bool).repeat(4)).reshape(num_nonzero * 4)
+
+    new_dict = {
+        'weight_ih_l0': module.lstm.W.masked_select(mask_W).reshape(num_nonzero * 4, module.lstm.W.shape[1]),
+        'weight_hh_l0': module.lstm.U.masked_select(mask_U).reshape(num_nonzero * 4, num_nonzero),
+        'bias_ih_l0': bias,
+        'bias_hh_l0': torch.zeros_like(bias),
+    }
+    module.inference_lstm = torch.nn.LSTM(module.input_size, num_nonzero)
+    module.inference_lstm.load_state_dict(new_dict)
+    module.mask = s.type(torch.bool).to('cuda')

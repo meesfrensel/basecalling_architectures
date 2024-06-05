@@ -9,6 +9,7 @@ import os
 import sys
 import torch
 from torch import nn
+import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../src')))
 from classes import BaseModelImpl
@@ -44,7 +45,11 @@ class OwnModel(BaseModelImpl):
         
         x = self.convolution(x)
         x = x.permute(2, 0, 1) # [seq len, batch size, channels (=hidden size)]
+        # start = time.time()
         x = self.encoder(x)
+        # end = time.time()
+        # if not self.training:
+        #     print("elapsed: {:.3f}".format(end - start))
         x = self.decoder(x)
         return x
 
@@ -84,15 +89,15 @@ class OwnModel(BaseModelImpl):
             encoder = nn.Sequential(SelectionLstm(input_size, 384, reverse = True),
                                     SelectionLstm(384, 384, reverse = False),
                                     SelectionLstm(384, 384, reverse = True),
-                                    # SelectionLstm(384, 384, reverse = False),
-                                    # SelectionLstm(384, 384, reverse = True),
+                                    SelectionLstm(384, 384, reverse = False),
+                                    SelectionLstm(384, 384, reverse = True),
                                     )
         else:
             encoder = nn.Sequential(SelectionLstm(input_size, 384, reverse = False),
                                     SelectionLstm(384, 384, reverse = True),
                                     SelectionLstm(384, 384, reverse = False),
-                                    # SelectionLstm(384, 384, reverse = True),
-                                    # SelectionLstm(384, 384, reverse = False),
+                                    SelectionLstm(384, 384, reverse = True),
+                                    SelectionLstm(384, 384, reverse = False),
                                     )
         return encoder    
 
@@ -139,35 +144,20 @@ class OwnModel(BaseModelImpl):
             p = self.forward(x) # forward through the network
             loss, losses = self.calculate_loss(y, p)
 
-        lambda_1 = 0.00001 # 0.08/N (if N is correctly assumed to be 384) is about 0.0002
-        lambda_2 = 0.00001
+        lambda_ = 0.0000001 # 0.08/N (if N is correctly assumed to be 384) is about 0.0002
 
-        log_alpha_z = None
-        log_alpha_s = None
         for name, param in self.named_parameters():
-            if 'log_alpha_z' in name:
-                log_alpha_z = param
-
             if 'log_alpha_s' in name:
-                log_alpha_s = param
-                # Multiply with lambda before summing to prevent overflow
-                loss += (lambda_2 * self._nonzero_cdf(log_alpha_s)).sum()
-                
-                # Multiply with lambda before summing to prevent overflow
-                loss += (lambda_2 * torch.einsum('i,j->ij',
-                                      self._nonzero_cdf(log_alpha_s),
-                                      self._nonzero_cdf(log_alpha_s)
-                                      )).fill_diagonal_(0).sum()
+                s_expectation = self._nonzero_cdf(param)
 
-            if 'log_alpha' in name and log_alpha_z != None and log_alpha_s != None:
-                # Multiply with lambda before summing to prevent overflow
-                loss += (lambda_1 * torch.einsum('i,j->ij',
-                                      self._nonzero_cdf(log_alpha_z),
-                                      self._nonzero_cdf(log_alpha_s)
-                                      )).sum()
+                # Input-to-hidden. We pretend z is all ones. TODO: get 384 from input size
+                loss += (lambda_ * 384 * s_expectation).sum()
 
-                log_alpha_z = None
-                log_alpha_s = None
+                # Hidden-to-hidden, diagonal only
+                loss += (lambda_ * s_expectation).sum()
+
+                # Hidden-to-hidden, except diagonal
+                loss += (lambda_ * torch.einsum('i,j->ij', s_expectation, s_expectation)).fill_diagonal_(0).sum()
 
         self.optimize(loss)
         losses['loss.global'] = loss.item()
